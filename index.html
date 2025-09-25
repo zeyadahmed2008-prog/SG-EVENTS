@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SG - Events & Invitations</title>
+  <style>
+    :root{
+      --dark:#0b2239;
+      --accent:#0b66ff;
+      --white:#ffffff;
+    }
+    body{
+      margin:0;
+      font-family:Arial,Helvetica,sans-serif;
+      background:var(--dark);
+      color:var(--white);
+      -webkit-font-smoothing:antialiased;
+    }
+    .container{
+      max-width:900px;
+      margin:30px auto;
+      padding:20px;
+    }
+    h1{margin:0 0 18px 0; text-align:center;}
+    .card{
+      background: rgba(255,255,255,0.03);
+      padding:14px;
+      border-radius:10px;
+      margin-bottom:16px;
+    }
+    label{display:block; font-size:14px; margin-bottom:6px; opacity:0.9;}
+    input[type="text"], input[type="date"], input[type="time"], textarea, select {
+      width:100%; padding:10px; border-radius:8px; border:none; margin-bottom:10px;
+      background: rgba(255,255,255,0.02); color:var(--white);
+    }
+    textarea{ min-height:70px; resize:vertical;}
+    .row{display:flex; gap:10px;}
+    .row > *{flex:1;}
+    button{
+      background:var(--accent); color:var(--white); border:none; padding:10px 14px;
+      border-radius:8px; cursor:pointer; font-weight:600;
+    }
+    button:active{transform:translateY(1px);}
+    #qrcode{margin-top:12px;}
+    .history-table{width:100%; border-collapse:collapse; font-size:14px;}
+    .history-table td, .history-table th{padding:8px; border-bottom:1px solid rgba(255,255,255,0.04);}
+    .small{font-size:12px; opacity:0.8;}
+    .flex-between{display:flex; justify-content:space-between; align-items:center;}
+    .muted{opacity:0.7; font-size:13px;}
+    .actions{display:flex; gap:8px;}
+    .link-like{background:transparent; color:var(--accent); border:1px solid rgba(255,255,255,0.03); padding:6px 8px; border-radius:6px; cursor:pointer;}
+    @media(max-width:640px){ .row{flex-direction:column;} }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>SG — Events & Invitations</h1>
+
+    <!-- Create event -->
+    <div class="card">
+      <div class="flex-between">
+        <strong>Create / Edit Event</strong>
+        <span class="small muted">Saved locally (browser)</span>
+      </div>
+      <label>Event name</label>
+      <input id="evt-name" type="text" placeholder="Event title (e.g. PROM NIGHT)">
+      <div class="row">
+        <input id="evt-date" type="date">
+        <input id="evt-time" type="time">
+      </div>
+      <label>Venue</label>
+      <input id="evt-venue" type="text" placeholder="Venue">
+      <label>Dress code</label>
+      <input id="evt-dress" type="text" placeholder="Dress code">
+      <label>Description</label>
+      <textarea id="evt-desc" placeholder="Short description"></textarea>
+      <div style="display:flex;gap:8px;">
+        <button id="save-event">Save Event</button>
+        <button id="clear-events" class="link-like">Clear all events</button>
+      </div>
+    </div>
+
+    <!-- Generate invitation -->
+    <div class="card">
+      <strong>Generate Invitation</strong>
+      <label>Select event</label>
+      <select id="event-select"></select>
+      <label>Guest name</label>
+      <input id="guest-name" type="text" placeholder="Enter guest full name">
+      <div style="display:flex;gap:8px;">
+        <button id="gen-btn">Generate Invitation & QR Code</button>
+        <button id="copy-url" class="link-like">Copy invitation link</button>
+      </div>
+
+      <div id="inv-preview" style="margin-top:12px;"></div>
+      <div id="qrcode"></div>
+    </div>
+
+    <!-- History -->
+    <div class="card">
+      <div class="flex-between">
+        <strong>Invitation History</strong>
+        <div class="actions">
+          <button id="export-history" class="link-like">Export JSON</button>
+          <button id="clear-history" class="link-like">Clear history</button>
+        </div>
+      </div>
+      <div id="history-list" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="muted small">Notes: QR links open a separate invitation page. No server required.</div>
+  </div>
+
+  <!-- QR lib -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <script>
+    // ---------- Utilities to encode/decode UTF-8 safely ----------
+    function encodeData(obj){
+      const json = JSON.stringify(obj);
+      const uint8 = new TextEncoder().encode(json);
+      let binary = '';
+      for (let i=0;i<uint8.length;i++) binary += String.fromCharCode(uint8[i]);
+      return btoa(binary);
+    }
+    function decodeData(b64){
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i=0;i<binary.length;i++) bytes[i]=binary.charCodeAt(i);
+      return new TextDecoder().decode(bytes);
+    }
+
+    // ---------- storage keys ----------
+    const EVENTS_KEY = 'sg_events_v1';
+    const HIST_KEY = 'sg_inv_history_v1';
+
+    // ---------- load/save events ----------
+    function loadEvents(){
+      try{
+        return JSON.parse(localStorage.getItem(EVENTS_KEY) || '[]');
+      }catch(e){ return []; }
+    }
+    function saveEvents(list){
+      localStorage.setItem(EVENTS_KEY, JSON.stringify(list));
+    }
+
+    // ---------- load/save history ----------
+    function loadHistory(){ try{ return JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(e){ return []; } }
+    function saveHistory(h){ localStorage.setItem(HIST_KEY, JSON.stringify(h)); }
+
+    // ---------- DOM refs ----------
+    const sel = document.getElementById('event-select');
+    const saveBtn = document.getElementById('save-event');
+    const clearEventsBtn = document.getElementById('clear-events');
+    const genBtn = document.getElementById('gen-btn');
+    const copyUrlBtn = document.getElementById('copy-url');
+    const invPreview = document.getElementById('inv-preview');
+    const qrContainer = document.getElementById('qrcode');
+    const historyDiv = document.getElementById('history-list');
+
+    // ---------- build base invite URL (invite.html must exist in same folder) ----------
+    function baseInviteURL(){
+      // folder of current page (works for GitHub Pages)
+      const path = window.location.pathname;
+      const folder = path.replace(/\/[^\/]*$/, '/');
+      return window.location.origin + folder + 'invite.html';
+    }
+
+    // ---------- Render events into select ----------
+    function renderEvents(){
+      const events = loadEvents();
+      sel.innerHTML = '';
+      if(events.length===0){
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '-- no events yet --';
+        sel.appendChild(opt);
+        return;
+      }
+      events.forEach((e, idx)=>{
+        const opt = document.createElement('option');
+        opt.value = idx; // index as id
+        opt.textContent = e.name + ' (' + e.date + ')';
+        sel.appendChild(opt);
+      });
+    }
+
+    // ---------- Render history ----------
+    function renderHistory(){
+      const hist = loadHistory();
+      if(hist.length===0){ historyDiv.innerHTML = '<div class="small muted">No invitations yet.</div>'; return; }
+      let html = '<table class="history-table"><thead><tr><th>Guest</th><th>Event</th><th>When</th><th>Action</th></tr></thead><tbody>';
+      hist.slice().reverse().forEach((h, i)=>{
+        const id = (hist.length - i - 1);
+        html += `<tr>
+          <td>${escapeHtml(h.guest)}</td>
+          <td>${escapeHtml(h.eventName)}</td>
+          <td class="small">${new Date(h.createdAt).toLocaleString()}</td>
+          <td>
+            <button class="link-like" onclick="openLink('${h.url}')">Open</button>
+            <button class="link-like" onclick="copyToClipboard('${h.url}')">Copy</button>
+            <button class="link-like" onclick="deleteHistory(${id})">Delete</button>
+          </td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      historyDiv.innerHTML = html;
+    }
+
+    // ---------- escape helper ----------
+    function escapeHtml(s){ return String(s || '').replace(/[&<>"']/g, function(m){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]); }); }
+
+    // ---------- open link in new tab ----------
+    function openLink(url){ window.open(url, '_blank'); }
+    window.openLink = openLink; // expose for onclick in table
+
+    // ---------- copy ----------
+    async function copyToClipboard(text){
+      try{
+        await navigator.clipboard.writeText(text);
+        alert('Copied link to clipboard');
+      }catch(e){
+        prompt('Copy this link:', text);
+      }
+    }
+    window.copyToClipboard = copyToClipboard;
+
+    // ---------- delete single history item ----------
+    function deleteHistory(index){
+      const h = loadHistory();
+      h.splice(index,1);
+      saveHistory(h);
+      renderHistory();
+    }
+    window.deleteHistory = deleteHistory;
+
+    // ---------- clear functions ----------
+    clearEventsBtn.addEventListener('click', ()=>{
+      if(confirm('Clear all saved events?')){ saveEvents([]); renderEvents(); }
+    });
+    document.getElementById('clear-history').addEventListener('click', ()=>{
+      if(confirm('Clear invitation history?')){ saveHistory([]); renderHistory(); }
+    });
+    document.getElementById('export-history').addEventListener('click', ()=>{
+      const h = loadHistory();
+      const blob = new Blob([JSON.stringify(h, null, 2)], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'sg-invitations.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // ---------- save event ----------
+    saveBtn.addEventListener('click', ()=>{
+      const name = document.getElementById('evt-name').value.trim();
+      const date = document.getElementById('evt-date').value;
+      const time = document.getElementById('evt-time').value;
+      const venue = document.getElementById('evt-venue').value.trim();
+      const dress = document.getElementById('evt-dress').value.trim();
+      const desc = document.getElementById('evt-desc').value.trim();
+      if(!name || !date){ alert('Please enter at least event name and date'); return; }
+      const events = loadEvents();
+      events.push({ name, date, time, venue, dress, desc });
+      saveEvents(events);
+      renderEvents();
+      alert('Event saved locally');
+      // clear inputs if you want:
+      document.getElementById('evt-name').value = '';
+    });
+
+    // ---------- generate invitation ----------
+    genBtn.addEventListener('click', ()=>{
+      const events = loadEvents();
+      const selectedIndex = sel.value;
+      if(!events || events.length===0){ alert('No events found — create an event first'); return; }
+      if(selectedIndex === ''){ alert('Choose an event'); return; }
+      const eventObj = events[Number(selectedIndex)];
+      const guest = document.getElementById('guest-name').value.trim() || 'GUEST';
+      // build payload
+      const payload = {
+        eventName: eventObj.name,
+        date: eventObj.date,
+        time: eventObj.time || '00:00',
+        venue: eventObj.venue || '',
+        dress: eventObj.dress || '',
+        desc: eventObj.desc || '',
+        guest: guest,
+        createdAt: Date.now()
+      };
+      const encoded = encodeData(payload);
+      const inviteUrl = baseInviteURL() + '?data=' + encodeURIComponent(encoded);
+
+      // show preview
+      invPreview.innerText = `Invitation for: ${payload.guest}\nEvent: ${payload.eventName}\nDate: ${payload.date} ${payload.time}\nVenue: ${payload.venue}\nDress code: ${payload.dress}\n\n(Scan the QR or open the link)`;
+
+      // generate QR
+      qrContainer.innerHTML = '';
+      try{
+        new QRCode(qrContainer, { text: inviteUrl, width: 200, height: 200 });
+      }catch(e){ qrContainer.innerText = inviteUrl; }
+
+      // save in history
+      const hist = loadHistory();
+      hist.push({ url: inviteUrl, guest: payload.guest, eventName: payload.eventName, createdAt: payload.createdAt, data: payload });
+      saveHistory(hist);
+      renderHistory();
+    });
+
+    // copy current link (if generated)
+    copyUrlBtn.addEventListener('click', ()=>{
+      const a = qrContainer.querySelector('img') || qrContainer.querySelector('canvas');
+      if(!a){
+        alert('Generate an invitation first to copy its link.');
+        return;
+      }
+      // when QR generated by library it stores data in <img src=...> or <canvas>
+      // we saved last history item url — use it
+      const hist = loadHistory();
+      if(hist.length===0){ alert('No invitation found'); return; }
+      const last = hist[hist.length-1];
+      copyToClipboard(last.url);
+    });
+
+    // initial render
+    renderEvents();
+    renderHistory();
+
+    // small helper: if there's no invite.html created yet, show a hint
+    fetch(baseInviteURL(), {method:'HEAD'}).catch(()=>{ /* ignore */ }).then(resp=>{
+      // nothing — we don't force anything
+    });
+  </script>
+</body>
+</html>
